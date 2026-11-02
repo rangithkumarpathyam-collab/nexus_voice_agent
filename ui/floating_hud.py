@@ -12,15 +12,16 @@ Clean-room implementation reverse-engineered from HeyNixi references:
 - Cyberpunk Headset: Strictly wears headset ONLY during actual music/song playback.
 """
 import sys
+import os
 import math
 from typing import Optional, List
 from PySide6.QtCore import Qt, QPoint, Signal, Slot, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QScrollArea, QFrame, QStackedWidget,
-    QApplication, QGraphicsDropShadowEffect
+    QApplication, QGraphicsDropShadowEffect, QProgressBar
 )
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtGui import QColor, QPainter, QPixmap, QPainterPath, QLinearGradient
 
 from config import THEME
 from database.db_manager import DatabaseManager
@@ -30,9 +31,11 @@ from audio.tts import TextToSpeechWorker
 from llm.ollama_client import OllamaStreamWorker, OllamaClient
 from automation.safety_guard import SafetyGuard, ProposedAction
 from automation.command_router import CommandRouter
+from automation.media_listener import SystemMediaListener
 from ui.audio_visualizer import CyberMascotEyes, VisualizerState
 from ui.styles import (
     HUD_PILL_COMPACT_STYLE, HUD_VOICE_HUD_STYLE, VOICE_CMD_PILL_STYLE, UNIFIED_CARD_STYLE,
+    HUD_MEDIA_PLAYER_STYLE, MEDIA_CONTROL_BUTTON_STYLE, MEDIA_PROGRESS_STYLE,
     SEGMENTED_TAB_CONTAINER_STYLE, SEGMENTED_TAB_ACTIVE_STYLE, SEGMENTED_TAB_INACTIVE_STYLE,
     TOP_ICON_BUTTON_STYLE, TOP_ICON_BUTTON_ACTIVE_STYLE,
     BOTTOM_INPUT_STYLE, CIRCULAR_SEND_BUTTON_STYLE,
@@ -114,6 +117,17 @@ class FloatingHUD(QWidget):
         self.safety_guard = SafetyGuard(self.db, self)
         self.command_router = CommandRouter()
 
+        # Windows System Media Transport Controls Listener
+        self.media_listener = SystemMediaListener(self)
+        self.media_listener.media_updated.connect(self._on_media_state_updated)
+        self.media_listener.start()
+
+        # Media Player auto-collapse timer
+        self._media_collapse_timer = QTimer(self)
+        self._media_collapse_timer.setSingleShot(True)
+        self._media_collapse_timer.timeout.connect(self._auto_collapse_media_player)
+        self._last_media_playing = False
+
         # Workers tracking
         self._stt_worker: Optional[SpeechToTextWorker] = None
         self._llm_worker: Optional[OllamaStreamWorker] = None
@@ -190,7 +204,96 @@ class FloatingHUD(QWidget):
         self.voice_hud_container.hide()
         self.card_layout.addWidget(self.voice_hud_container)
 
-        # 3. Full Expanded Card Container (shown when clicking notch or chat)
+        # 3. Dynamic Island Media Player Container (shown when playing audio/video)
+        self.media_container = QWidget()
+        media_layout = QVBoxLayout(self.media_container)
+        media_layout.setContentsMargins(16, 2, 16, 12)
+        media_layout.setSpacing(8)
+
+        # Middle row: Thumbnail + Track Info + Media Controls
+        media_mid_row = QHBoxLayout()
+        media_mid_row.setContentsMargins(0, 0, 0, 0)
+        media_mid_row.setSpacing(12)
+
+        # 44x44 Album Art / Video Thumbnail (rounded rectangle)
+        self.media_thumb_lbl = QLabel()
+        self.media_thumb_lbl.setFixedSize(44, 44)
+        self.media_thumb_lbl.setStyleSheet("border-radius: 10px; background-color: #141720;")
+        media_mid_row.addWidget(self.media_thumb_lbl)
+
+        # Track metadata (Title + Artist)
+        meta_layout = QVBoxLayout()
+        meta_layout.setContentsMargins(0, 2, 0, 2)
+        meta_layout.setSpacing(2)
+
+        self.media_title_lbl = QLabel("No Media Playing")
+        self.media_title_lbl.setStyleSheet("color: #FFFFFF; font-size: 13px; font-weight: bold; font-family: 'Segoe UI', system-ui;")
+        self.media_title_lbl.setMaximumWidth(190)
+        meta_layout.addWidget(self.media_title_lbl)
+
+        self.media_artist_lbl = QLabel("")
+        self.media_artist_lbl.setStyleSheet("color: #8E95A5; font-size: 11px; font-family: 'Segoe UI', system-ui;")
+        self.media_artist_lbl.setMaximumWidth(190)
+        meta_layout.addWidget(self.media_artist_lbl)
+
+        media_mid_row.addLayout(meta_layout)
+        media_mid_row.addStretch()
+
+        # Playback Controls: ⏮, ⏸/▶, ⏭
+        controls_layout = QHBoxLayout()
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(6)
+
+        self.media_prev_btn = QPushButton("⏮")
+        self.media_prev_btn.setStyleSheet(MEDIA_CONTROL_BUTTON_STYLE)
+        self.media_prev_btn.setFixedSize(28, 28)
+        self.media_prev_btn.setToolTip("Previous Track")
+        self.media_prev_btn.clicked.connect(SystemMediaListener.prev_track)
+        controls_layout.addWidget(self.media_prev_btn)
+
+        self.media_play_btn = QPushButton("⏸")
+        self.media_play_btn.setStyleSheet("QPushButton { background: transparent; color: #FFFFFF; font-size: 16px; font-weight: bold; border: none; padding: 2px; } QPushButton:hover { color: #00F0FF; }")
+        self.media_play_btn.setFixedSize(28, 28)
+        self.media_play_btn.setToolTip("Play / Pause")
+        self.media_play_btn.clicked.connect(self._on_media_play_pause_clicked)
+        controls_layout.addWidget(self.media_play_btn)
+
+        self.media_next_btn = QPushButton("⏭")
+        self.media_next_btn.setStyleSheet(MEDIA_CONTROL_BUTTON_STYLE)
+        self.media_next_btn.setFixedSize(28, 28)
+        self.media_next_btn.setToolTip("Next Track")
+        self.media_next_btn.clicked.connect(SystemMediaListener.next_track)
+        controls_layout.addWidget(self.media_next_btn)
+
+        media_mid_row.addLayout(controls_layout)
+        media_layout.addLayout(media_mid_row)
+
+        # Bottom row: Position Timestamp, Scrubber Bar, Remaining Timestamp
+        time_row = QHBoxLayout()
+        time_row.setContentsMargins(0, 0, 0, 0)
+        time_row.setSpacing(10)
+
+        self.media_pos_lbl = QLabel("0:00")
+        self.media_pos_lbl.setStyleSheet("color: #64748B; font-size: 10px; font-family: 'Segoe UI', monospace;")
+        time_row.addWidget(self.media_pos_lbl)
+
+        self.media_progress_bar = QProgressBar()
+        self.media_progress_bar.setStyleSheet(MEDIA_PROGRESS_STYLE)
+        self.media_progress_bar.setFixedHeight(4)
+        self.media_progress_bar.setTextVisible(False)
+        self.media_progress_bar.setRange(0, 1000)
+        self.media_progress_bar.setValue(0)
+        time_row.addWidget(self.media_progress_bar)
+
+        self.media_dur_lbl = QLabel("-0:00")
+        self.media_dur_lbl.setStyleSheet("color: #64748B; font-size: 10px; font-family: 'Segoe UI', monospace;")
+        time_row.addWidget(self.media_dur_lbl)
+
+        media_layout.addLayout(time_row)
+        self.media_container.hide()
+        self.card_layout.addWidget(self.media_container)
+
+        # 4. Full Expanded Card Container (shown when clicking notch or chat)
         self.expanded_container = QWidget()
         expanded_layout = QVBoxLayout(self.expanded_container)
         expanded_layout.setContentsMargins(14, 0, 14, 14)
@@ -369,7 +472,12 @@ class FloatingHUD(QWidget):
 
     def _on_orb_clicked(self):
         if self.mode == "compact":
-            self.show_full_card()
+            if self.orb.is_playing_music:
+                self.show_media_player()
+            else:
+                self.show_full_card()
+        elif self.mode == "media_player":
+            self.show_compact_notch()
         elif self.mode == "voice_hud":
             self.show_compact_notch()
         else:
@@ -380,7 +488,7 @@ class FloatingHUD(QWidget):
         self.voice_bars.set_audio_level(rms)
         self.audio_bars.set_audio_level(rms)
 
-    # --- THREE DYNAMIC MORPHING STATES ---
+    # --- FOUR DYNAMIC MORPHING STATES ---
     def show_compact_notch(self):
         """State 1: Collapses back to the 112px x 44px compact mascot notch."""
         if self.mode == "compact":
@@ -393,6 +501,7 @@ class FloatingHUD(QWidget):
         new_y = self.y()
 
         self.voice_hud_container.hide()
+        self.media_container.hide()
         self.expanded_container.hide()
         self.card.setStyleSheet(HUD_PILL_COMPACT_STYLE)
         self.card.setFixedSize(target_w, target_h)
@@ -414,6 +523,7 @@ class FloatingHUD(QWidget):
         new_x = self.x() - dx
         new_y = self.y()
 
+        self.media_container.hide()
         self.expanded_container.hide()
         self.card.setStyleSheet(HUD_VOICE_HUD_STYLE)
         self.card.setFixedSize(target_w, target_h)
@@ -422,6 +532,31 @@ class FloatingHUD(QWidget):
         self.voice_cmd_pill.setText("Dictating..." if self._is_dictation_mode else "Command")
         self.voice_hud_container.show()
         self.mode = "voice_hud"
+
+        self.move(new_x, new_y)
+        self.adjustSize()
+        self.update()
+
+    def show_media_player(self):
+        """State 4: Expands into the Dynamic Island Media Player (380px x 136px)."""
+        if self.mode == "media_player":
+            return
+
+        target_w = 380
+        target_h = 136
+        dx = (target_w - self.card.width()) // 2
+        new_x = self.x() - dx
+        new_y = self.y()
+
+        self.voice_hud_container.hide()
+        self.expanded_container.hide()
+        self.card.setStyleSheet(HUD_MEDIA_PLAYER_STYLE)
+        self.card.setFixedSize(target_w, target_h)
+        self.orb.setFixedSize(90, 34)
+        self.orb.set_music_playing(True)
+
+        self.media_container.show()
+        self.mode = "media_player"
 
         self.move(new_x, new_y)
         self.adjustSize()
@@ -439,6 +574,7 @@ class FloatingHUD(QWidget):
         new_y = self.y()
 
         self.voice_hud_container.hide()
+        self.media_container.hide()
         self.card.setStyleSheet(UNIFIED_CARD_STYLE)
         self.card.setFixedSize(target_w, target_h)
         self.orb.setFixedSize(90, 34)
@@ -919,6 +1055,127 @@ class FloatingHUD(QWidget):
     @Slot(bool)
     def set_music_mode(self, playing: bool):
         self.orb.set_music_playing(playing)
+
+    # --- DYNAMIC ISLAND MEDIA PLAYER LOGIC ---
+    @Slot(dict)
+    def _on_media_state_updated(self, data: dict):
+        status = data.get("Status", "Closed")
+        title = data.get("Title", "").strip()
+        artist = data.get("Artist", "").strip()
+        pos = data.get("Position", 0.0)
+        dur = data.get("Duration", 0.0)
+        thumb_path = data.get("ThumbnailPath", "")
+
+        is_playing = (status == "Playing")
+
+        # 1. Update cyberpunk headset state on mascot eyes
+        if is_playing:
+            self.orb.set_music_playing(True)
+        elif status in ("Paused", "Closed", "Stopped"):
+            self.orb.set_music_playing(False)
+
+        # 2. Update media player labels and controls
+        display_title = title if title else "Audio / Video Playing"
+        if len(display_title) > 28:
+            display_title = display_title[:26] + "..."
+        self.media_title_lbl.setText(display_title)
+
+        display_artist = artist if artist else (data.get("SourceApp", "") or "Media")
+        if len(display_artist) > 28:
+            display_artist = display_artist[:26] + "..."
+        self.media_artist_lbl.setText(display_artist)
+
+        # Play/Pause button state
+        self.media_play_btn.setText("⏸" if is_playing else "▶")
+
+        # Rounded thumbnail rendering
+        self._update_media_thumbnail(thumb_path)
+
+        # Progress bar & timestamps
+        if dur > 0:
+            frac = min(1.0, max(0.0, pos / dur))
+            self.media_progress_bar.setValue(int(frac * 1000))
+            self.media_pos_lbl.setText(self._format_seconds(pos))
+            rem = max(0.0, dur - pos)
+            self.media_dur_lbl.setText(f"-{self._format_seconds(rem)}")
+        else:
+            self.media_progress_bar.setValue(0)
+            self.media_pos_lbl.setText(self._format_seconds(pos))
+            self.media_dur_lbl.setText("")
+
+        # 3. Transitions:
+        if is_playing and not self._last_media_playing:
+            self._last_media_playing = True
+            # When media starts playing, automatically expand to Media Player card for 5 seconds
+            if self.mode == "compact":
+                self.show_media_player()
+                self._media_collapse_timer.start(5000)
+
+        elif not is_playing and self._last_media_playing:
+            self._last_media_playing = False
+            # When media is paused or stopped, collapse back
+            if self.mode == "media_player":
+                QTimer.singleShot(1000, self.show_compact_notch)
+
+    def _auto_collapse_media_player(self):
+        if self.mode == "media_player":
+            # If cursor is currently over the media card, defer collapsing
+            if self.card.underMouse():
+                self._media_collapse_timer.start(2500)
+                return
+            self.show_compact_notch()
+
+    def _on_media_play_pause_clicked(self):
+        SystemMediaListener.play_pause()
+        if self.media_play_btn.text() == "⏸":
+            self.media_play_btn.setText("▶")
+            self.orb.set_music_playing(False)
+        else:
+            self.media_play_btn.setText("⏸")
+            self.orb.set_music_playing(True)
+
+    def _update_media_thumbnail(self, thumb_path: str):
+        w, h, r = 44, 44, 10
+        if thumb_path and os.path.exists(thumb_path):
+            src = QPixmap(thumb_path)
+            if not src.isNull():
+                dest = QPixmap(w, h)
+                dest.fill(Qt.transparent)
+                p = QPainter(dest)
+                p.setRenderHint(QPainter.Antialiasing)
+                path = QPainterPath()
+                path.addRoundedRect(0, 0, w, h, r, r)
+                p.setClipPath(path)
+                p.drawPixmap(0, 0, src.scaled(w, h, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
+                p.end()
+                self.media_thumb_lbl.setPixmap(dest)
+                return
+
+        # Default music gradient artwork
+        pix = QPixmap(w, h)
+        pix.fill(Qt.transparent)
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.Antialiasing)
+        grad = QLinearGradient(0, 0, w, h)
+        grad.setColorAt(0.0, QColor("#2563EB"))
+        grad.setColorAt(1.0, QColor("#7C3AED"))
+        p.setBrush(grad)
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(0, 0, w, h, r, r)
+        p.setPen(QColor("#FFFFFF"))
+        font = p.font()
+        font.setPointSize(16)
+        p.setFont(font)
+        p.drawText(pix.rect(), Qt.AlignCenter, "🎵")
+        p.end()
+        self.media_thumb_lbl.setPixmap(pix)
+
+    @staticmethod
+    def _format_seconds(seconds: float) -> str:
+        s = int(max(0, seconds))
+        m = s // 60
+        sec = s % 60
+        return f"{m}:{sec:02d}"
 
     # --- DRAGGING & PERSISTENCE ---
     def mousePressEvent(self, event):

@@ -23,6 +23,45 @@ HUD_VOICE_HUD_STYLE = f"""
     }}
 """
 
+HUD_MEDIA_PLAYER_STYLE = """
+    QWidget#MainCard {
+        background-color: #000000;
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        border-radius: 24px;
+    }
+    QWidget#MainCard:hover {
+        border: 1px solid rgba(255, 255, 255, 0.22);
+    }
+"""
+
+MEDIA_CONTROL_BUTTON_STYLE = """
+    QPushButton {
+        background: transparent;
+        color: #94A3B8;
+        border: none;
+        border-radius: 6px;
+        padding: 2px;
+    }
+    QPushButton:hover {
+        color: #FFFFFF;
+        background-color: rgba(255, 255, 255, 0.08);
+    }
+"""
+
+MEDIA_PROGRESS_STYLE = """
+    QProgressBar {
+        background-color: #242936;
+        border: none;
+        border-radius: 2px;
+        height: 4px;
+        text-align: center;
+    }
+    QProgressBar::chunk {
+        background-color: #FFFFFF;
+        border-radius: 2px;
+    }
+"""
+
 VOICE_CMD_PILL_STYLE = """
     QLabel {
         background-color: rgba(26, 31, 40, 0.95);

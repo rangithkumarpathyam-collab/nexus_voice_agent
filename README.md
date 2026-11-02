@@ -107,6 +107,7 @@ run_assistant.bat
 | **Push-to-Talk (Voice)** | **Hold `Left Alt`** or **`Right Ctrl`** | Drops down the **VoiceHUD**; speak your command, then release to execute. |
 | **Voice Toggle** | **`F8`** or **`🎙️` Icon** | Single press to start listening; press again to finish. |
 | **In-Place Dictation** | **Hold `Right Alt` / `AltGr`** | Transcribes and types speech directly into whatever input box your cursor is in (Notepad, browser, chats, docs) without stealing window focus. |
+| **Dynamic Island Media Player** | **Play Any Audio or Video** | Automatically detects any media playing across Windows (YouTube, Chrome, Spotify, etc.), equips the cyberpunk headset on the mascot eyes, displays the album art, track title, artist, progress scrubber, and media controls (`⏮ ⏸ ⏭`). |
 | **Cursor Proximity & Hover** | **Move Cursor Near Notch** | Mascot eyes perk up, dilate with curiosity, lock gaze, and illuminate with a soft ethereal aura and playful elastic bounce. |
 | **Move Notch** | **Click & Drag** | Drag the notch anywhere across your displays (position is persisted). |
 | **Open Full Card** | **Double-Click Notch** | Expands into the full 440px × 480px Unified Window (Chat & History). |

@@ -94,9 +94,25 @@ class SafetyGuard(QObject):
                 import webbrowser
                 webbrowser.open(action.payload)
                 return True
-            elif action.action_type == "type_text" and HAS_PYAUTOGUI:
-                pyautogui.write(action.payload, interval=0.01)
-                return True
+            elif action.action_type == "type_text":
+                try:
+                    from pynput.keyboard import Controller
+                    Controller().type(action.payload)
+                    return True
+                except Exception:
+                    pass
+
+                if HAS_PYAUTOGUI:
+                    try:
+                        import pyperclip, time
+                        pyperclip.copy(action.payload)
+                        time.sleep(0.04)
+                        pyautogui.hotkey('ctrl', 'v')
+                        return True
+                    except Exception:
+                        pyautogui.write(action.payload, interval=0.01)
+                        return True
+                return False
             elif action.action_type in ("press_key", "pause_music") and HAS_PYAUTOGUI:
                 pyautogui.press(action.payload)
                 return True

@@ -25,6 +25,7 @@ class VisualizerState(Enum):
 
 class CyberMascotEyes(QWidget):
     clicked = Signal()
+    proximity_changed = Signal(float, float)  # (proximity_intensity, hover_intensity)
 
     def __init__(self, width: int = 90, height: int = 40, size: int = None, parent=None):
         if size is not None:
@@ -33,6 +34,7 @@ class CyberMascotEyes(QWidget):
         super().__init__(parent)
         self.setFixedSize(width, height)
         self.setCursor(Qt.PointingHandCursor)
+        self.setMouseTracking(True)
 
         self.state = VisualizerState.IDLE
         self.audio_level = 0.0
@@ -42,6 +44,13 @@ class CyberMascotEyes(QWidget):
         self.look_y = 0.0
         self.target_look_x = 0.0
         self.target_look_y = 0.0
+
+        # Cursor Proximity & Smooth Hover Animation
+        self.proximity_intensity = 0.0  # 0.0 (far) to 1.0 (approaching within radius)
+        self.hover_intensity = 0.0      # 0.0 (not over) to 1.0 (cursor directly over notch)
+        self.hover_bounce = 0.0         # Elastic entry bounce (1.0 down to 0.0)
+        self.hover_phase = 0.0          # Organic breathing wave while hovering
+        self._is_cursor_hovering = False
 
         # Inactivity Sleep State
         self._last_cursor_pos = None
@@ -66,6 +75,15 @@ class CyberMascotEyes(QWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._animate)
         self.timer.start(20)
+
+    def enterEvent(self, event):
+        self._is_cursor_hovering = True
+        self.hover_bounce = 1.0  # Trigger smooth responsive spring bounce!
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._is_cursor_hovering = False
+        super().leaveEvent(event)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -129,7 +147,10 @@ class CyberMascotEyes(QWidget):
         self.pulse_phase = (self.pulse_phase + 0.08) % (math.pi * 2)
         self._tick_counter += 1
 
-        # 1. Real-Time Cursor Tracking & Inactivity Sleep Detection
+        target_proximity = 0.0
+        target_hover = 0.0
+
+        # 1. Real-Time Cursor Tracking, Proximity & Inactivity Sleep Detection
         try:
             cursor_pos = QCursor.pos()
             if self._last_cursor_pos is None:
@@ -150,13 +171,50 @@ class CyberMascotEyes(QWidget):
             center_global = self.mapToGlobal(self.rect().center())
             dx = cursor_pos.x() - center_global.x()
             dy = cursor_pos.y() - center_global.y()
+            dist = math.hypot(dx, dy)
 
-            max_x = 5.5
-            max_y = 4.0
-            self.target_look_x = max(-max_x, min(max_x, dx / 90.0))
-            self.target_look_y = max(-max_y, min(max_y, dy / 70.0))
+            # Check if cursor is directly hovering over or inside the widget bounds
+            local_pos = self.mapFromGlobal(cursor_pos)
+            is_directly_over = self.rect().contains(local_pos)
+
+            # Proximity calculation: radius of 180px around the notch
+            if is_directly_over:
+                target_proximity = 1.0
+                target_hover = 1.0
+            elif dist < 180.0:
+                # Smooth cubic ease-out curve as cursor gets closer
+                t = 1.0 - (dist / 180.0)
+                target_proximity = t * t * (3.0 - 2.0 * t)  # smoothstep
+                target_hover = max(0.0, 1.0 - (dist / 60.0))
+            else:
+                target_proximity = 0.0
+                target_hover = 0.0
+
+            # Dynamic gaze sensitivity: wider and sharper when cursor is nearby
+            max_x = 5.5 + target_proximity * 1.5
+            max_y = 4.0 + target_proximity * 1.0
+            divisor_x = max(25.0, 90.0 - target_proximity * 50.0)
+            divisor_y = max(20.0, 70.0 - target_proximity * 40.0)
+
+            self.target_look_x = max(-max_x, min(max_x, dx / divisor_x))
+            self.target_look_y = max(-max_y, min(max_y, dy / divisor_y))
         except Exception:
             pass
+
+        # Smooth exponential interpolation (lerp) for proximity and hover factors
+        self.proximity_intensity += (target_proximity - self.proximity_intensity) * 0.16
+        self.hover_intensity += (target_hover - self.hover_intensity) * 0.20
+
+        # Elastic bounce decay on hover entry
+        if self.hover_bounce > 0.001:
+            self.hover_bounce = max(0.0, self.hover_bounce - 0.07)
+
+        # Hover breathing phase
+        if self.hover_intensity > 0.05:
+            self.hover_phase = (self.hover_phase + 0.14) % (math.pi * 2)
+
+        # Emit proximity changed signal so HUD can adjust shadow/glow in sync
+        self.proximity_changed.emit(self.proximity_intensity, self.hover_intensity)
 
         # Smooth sleep transition and breathing
         if self.is_sleeping:
@@ -168,7 +226,7 @@ class CyberMascotEyes(QWidget):
         else:
             self.sleep_progress = max(0.0, self.sleep_progress - 0.12)
 
-        # Smooth exponential interpolation (lerp)
+        # Smooth exponential interpolation (lerp) for gaze
         self.look_x += (self.target_look_x - self.look_x) * 0.22
         self.look_y += (self.target_look_y - self.look_y) * 0.22
 
@@ -210,10 +268,24 @@ class CyberMascotEyes(QWidget):
             bob_y = math.sin(self.music_bob_phase) * 2.2 * self.headset_anim_progress
         cy += bob_y
 
+        # Proximity & Hover bounce effect on Y center (cute interactive spring)
+        if self.hover_bounce > 0.001:
+            bounce_y = -math.sin(self.hover_bounce * math.pi) * 2.2
+            cy += bounce_y
+
         # Eye dimensions (HeyNixi exact pixel replica from REA)
         eye_base_w = 9.5
         eye_base_h = 16.0
         eye_gap = 22.0
+
+        # Proximity expansion: eyes perk up curiously as cursor approaches
+        eye_base_w += self.proximity_intensity * 1.5
+        eye_base_h += self.proximity_intensity * 2.5
+
+        # Hover continuous subtle breathing pulse (feels organic and alive)
+        if self.hover_intensity > 0.01:
+            hover_pulse = math.sin(self.hover_phase) * 0.8 * self.hover_intensity
+            eye_base_h += hover_pulse
 
         # Apply blinking squish (awake)
         blink_factor = math.sin(self.blink_progress * math.pi) if self.is_blinking else 0.0
@@ -229,7 +301,7 @@ class CyberMascotEyes(QWidget):
 
         # Audio boost when listening / speaking (only if awake)
         if self.state == VisualizerState.LISTENING and not self.is_sleeping:
-            eye_h = min(19.0, eye_h + self.audio_level * 5.0)
+            eye_h = min(22.0, eye_h + self.audio_level * 5.0)
 
         # Eye centers with cursor gaze offset
         gaze_x = self.look_x
@@ -250,19 +322,33 @@ class CyberMascotEyes(QWidget):
         rect = QRectF(x_center - w / 2.0, y_center - h / 2.0, w, h)
         radius = min(w, h) / 2.0
 
-        # Soft outer aura glow
-        glow_rect = QRectF(x_center - w / 2.0 - 3.0, y_center - h / 2.0 - 3.0, w + 6.0, h + 6.0)
-        glow_color = QColor(255, 255, 255, 45)
+        # Dynamic aura glow that smoothly expands when cursor approaches
+        glow_spread = 3.0 + self.proximity_intensity * 4.0 + self.hover_intensity * 2.5
+        glow_rect = QRectF(
+            x_center - w / 2.0 - glow_spread,
+            y_center - h / 2.0 - glow_spread,
+            w + glow_spread * 2.0,
+            h + glow_spread * 2.0
+        )
+
+        base_alpha = int(45 + self.proximity_intensity * 40 + self.hover_intensity * 35)
+
         if self.state == VisualizerState.LISTENING:
-            glow_color = QColor(192, 132, 252, 90) # Purple neon
+            glow_color = QColor(192, 132, 252, min(140, base_alpha + 50))  # Purple neon
         elif self.state == VisualizerState.SPEAKING:
-            glow_color = QColor(52, 211, 153, 90)  # Emerald glow
+            glow_color = QColor(52, 211, 153, min(140, base_alpha + 50))   # Emerald glow
         elif self.state == VisualizerState.ERROR:
-            glow_color = QColor(248, 113, 113, 90) # Red warning
+            glow_color = QColor(248, 113, 113, min(140, base_alpha + 50))  # Red warning
+        else:
+            # Idle aura: smooth blend from soft white to luminous icy-blue bloom on hover
+            r = int(255 - self.hover_intensity * 45)   # 255 -> 210
+            g = int(255 - self.hover_intensity * 15)   # 255 -> 240
+            b = 255
+            glow_color = QColor(r, g, b, min(130, base_alpha))
 
         painter.setPen(Qt.NoPen)
         painter.setBrush(glow_color)
-        painter.drawRoundedRect(glow_rect, radius + 2.0, radius + 2.0)
+        painter.drawRoundedRect(glow_rect, radius + glow_spread * 0.7, radius + glow_spread * 0.7)
 
         # Pure white capsule body
         grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())

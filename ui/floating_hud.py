@@ -94,15 +94,18 @@ class FloatingHUD(QWidget):
         self.db = db
         self.active_convo_id = self.db.get_or_create_active_conversation()
         self._is_dictation_mode = False
+        self._dictation_target_hwnd = None
         self.mode = "compact"  # "compact" | "voice_hud" | "full_card"
 
-        # Window flags: Top-level frameless, stays on top, translucent
+        # Window flags: Top-level frameless, stays on top, translucent, tool (no alt-tab clutter)
         self.setWindowFlags(
             Qt.Window |
             Qt.WindowStaysOnTopHint |
-            Qt.FramelessWindowHint
+            Qt.FramelessWindowHint |
+            Qt.Tool
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
 
         # Core engines
         self.recorder = AudioRecorder()
@@ -138,11 +141,11 @@ class FloatingHUD(QWidget):
         self.card.setFixedSize(112, 44)
 
         # Ambient drop shadow
-        shadow = QGraphicsDropShadowEffect(self.card)
-        shadow.setBlurRadius(24)
-        shadow.setColor(QColor(0, 0, 0, 200))
-        shadow.setOffset(0, 3)
-        self.card.setGraphicsEffect(shadow)
+        self.shadow_effect = QGraphicsDropShadowEffect(self.card)
+        self.shadow_effect.setBlurRadius(24)
+        self.shadow_effect.setColor(QColor(0, 0, 0, 200))
+        self.shadow_effect.setOffset(0, 3)
+        self.card.setGraphicsEffect(self.shadow_effect)
 
         self.card_layout = QVBoxLayout(self.card)
         self.card_layout.setContentsMargins(0, 0, 0, 0)
@@ -346,10 +349,23 @@ class FloatingHUD(QWidget):
         # Clicking mascot orb in compact mode opens the card
         self.orb.clicked.connect(self._on_orb_clicked)
 
+        # Smooth hover/proximity illumination
+        self.orb.proximity_changed.connect(self._on_proximity_changed)
+
         # Safety Guard signals
         self.safety_guard.action_requested.connect(self._on_action_requested)
         self.safety_guard.action_executed.connect(lambda msg: self.set_status(msg, VisualizerState.IDLE))
         self.safety_guard.action_rejected.connect(lambda msg: self.set_status(msg, VisualizerState.ERROR))
+
+    @Slot(float, float)
+    def _on_proximity_changed(self, prox: float, hover: float):
+        if self.mode == "compact":
+            blur = int(24 + hover * 12)
+            self.shadow_effect.setBlurRadius(blur)
+            if hover > 0.08:
+                self.shadow_effect.setColor(QColor(0, int(180 * hover), 255, int(75 * hover)))
+            else:
+                self.shadow_effect.setColor(QColor(0, 0, 0, 200))
 
     def _on_orb_clicked(self):
         if self.mode == "compact":
@@ -403,7 +419,7 @@ class FloatingHUD(QWidget):
         self.card.setFixedSize(target_w, target_h)
         self.orb.setFixedSize(92, 34)
 
-        self.voice_cmd_pill.setText("Command")
+        self.voice_cmd_pill.setText("Dictating..." if self._is_dictation_mode else "Command")
         self.voice_hud_container.show()
         self.mode = "voice_hud"
 
@@ -428,6 +444,7 @@ class FloatingHUD(QWidget):
         self.orb.setFixedSize(90, 34)
 
         self.expanded_container.show()
+        self.activateWindow()
         self.input_field.setFocus()
         self.mode = "full_card"
 
@@ -542,9 +559,18 @@ class FloatingHUD(QWidget):
 
     @Slot()
     def start_dictation_capture(self):
+        # Capture current foreground window before starting recording
+        try:
+            import win32gui
+            self._dictation_target_hwnd = win32gui.GetForegroundWindow()
+        except Exception:
+            self._dictation_target_hwnd = None
+
         self._is_dictation_mode = True
         if self.mode != "full_card":
             self.show_voice_hud()
+            self.voice_cmd_pill.setText("Dictating...")
+            self.voice_rec_label.setText("● REC")
         self._begin_audio_recording("DICTATING...")
 
     @Slot()
@@ -561,7 +587,7 @@ class FloatingHUD(QWidget):
             self.recorder.start_recording()
             self.orb.set_state(VisualizerState.LISTENING)
             if self.mode == "voice_hud":
-                self.voice_cmd_pill.setText("Command")
+                self.voice_cmd_pill.setText("Dictating..." if self._is_dictation_mode else "Command")
                 self.voice_rec_label.setText("● REC")
             self.mic_btn.setStyleSheet(TOP_ICON_BUTTON_ACTIVE_STYLE)
         except Exception as e:
@@ -596,17 +622,55 @@ class FloatingHUD(QWidget):
         if not cleaned:
             self.set_status("NO SPEECH DETECTED", VisualizerState.IDLE)
             if self.mode == "voice_hud":
+                self.voice_cmd_pill.setText("No speech")
                 QTimer.singleShot(600, self.show_compact_notch)
             return
 
         if self._is_dictation_mode:
-            action = ProposedAction(
-                action_type="type_text",
-                description="Type text into active window",
-                payload=cleaned,
-                risk_level="low"
-            )
-            self.safety_guard.request_action(action)
+            # Direct In-Place Dictation at the active cursor without focus theft
+            if self.mode == "voice_hud":
+                self.voice_cmd_pill.setText("Typed!")
+                self.voice_rec_label.setText("✓ OK")
+                self.orb.set_state(VisualizerState.SPEAKING)
+
+            # Ensure keyboard modifiers are released to prevent stuck Alt/Ctrl keys
+            try:
+                import pyautogui
+                for mod in ('alt', 'altleft', 'altright', 'ctrl', 'ctrlleft', 'ctrlright', 'shift'):
+                    pyautogui.keyUp(mod)
+            except Exception:
+                pass
+
+            # Restore focus to target window if it shifted
+            try:
+                import win32gui
+                if self._dictation_target_hwnd and win32gui.IsWindow(self._dictation_target_hwnd):
+                    win32gui.SetForegroundWindow(self._dictation_target_hwnd)
+            except Exception:
+                pass
+
+            # Instant in-place typing into active input field (preserves user clipboard)
+            paste_text = cleaned + " "
+            typed_success = False
+            try:
+                from pynput.keyboard import Controller
+                kb = Controller()
+                kb.type(paste_text)
+                typed_success = True
+            except Exception:
+                pass
+
+            if not typed_success:
+                try:
+                    import pyperclip, pyautogui, time
+                    pyperclip.copy(paste_text)
+                    time.sleep(0.04)
+                    pyautogui.hotkey('ctrl', 'v')
+                except Exception as e:
+                    print(f"[Dictation Error] {e}")
+
+            self.db.add_message(self.active_convo_id, "user", f"[Dictation] {cleaned}")
+
             if self.mode == "voice_hud":
                 QTimer.singleShot(800, self.show_compact_notch)
         else:

@@ -22,17 +22,20 @@ class GlobalHotkeyManager:
     """
     Listens for global hotkeys across all Windows apps:
     - Left Alt (or Right Ctrl): Voice Assistant Push-To-Talk (Hold to speak, release to process)
-    - Right Alt: In-Place Voice Dictation (Transcribes and types into active window with safety check)
+    - Right Alt / AltGr: In-Place Voice Dictation (Records & types directly into active window at cursor)
     """
     def __init__(self, hud: FloatingHUD):
         self.hud = hud
-        # Left Alt as primary voice hotkey (and Right Ctrl as backup)
+        # Left Alt as primary voice assistant hotkey (and Right Ctrl as backup)
         self.ptt_keys = {
             keyboard.Key.alt_l,
-            getattr(keyboard.Key, "alt", None),
             keyboard.Key.ctrl_r
         }
-        self.dictation_key = keyboard.Key.alt_r
+        # Right Alt and AltGr for in-place dictation at cursor
+        self.dictation_keys = {
+            keyboard.Key.alt_r,
+            getattr(keyboard.Key, "alt_gr", None)
+        }
         self.ptt_pressed = False
         self.dictation_pressed = False
         self._listener = None
@@ -49,23 +52,24 @@ class GlobalHotkeyManager:
                     self.hud.toggle_voice_capture_signal.emit()
                     return
 
-                if key in self.ptt_keys and not self.ptt_pressed:
-                    self.ptt_pressed = True
-                    self.hud.ptt_pressed_signal.emit()
-                elif key == self.dictation_key and not self.dictation_pressed:
+                # Dictation keys take priority (Right Alt / AltGr)
+                if key in self.dictation_keys and not self.dictation_pressed:
                     self.dictation_pressed = True
                     self.hud.dictation_pressed_signal.emit()
+                elif key in self.ptt_keys and not self.ptt_pressed:
+                    self.ptt_pressed = True
+                    self.hud.ptt_pressed_signal.emit()
             except Exception:
                 pass
 
         def on_release(key):
             try:
-                if key in self.ptt_keys and self.ptt_pressed:
-                    self.ptt_pressed = False
-                    self.hud.ptt_released_signal.emit()
-                elif key == self.dictation_key and self.dictation_pressed:
+                if key in self.dictation_keys and self.dictation_pressed:
                     self.dictation_pressed = False
                     self.hud.dictation_released_signal.emit()
+                elif key in self.ptt_keys and self.ptt_pressed:
+                    self.ptt_pressed = False
+                    self.hud.ptt_released_signal.emit()
             except Exception:
                 pass
 
@@ -97,11 +101,10 @@ def main():
     # Initialize Database
     db = DatabaseManager()
 
-    # Launch HUD
+    # Launch HUD (without activating so it doesn't steal focus from active window)
     hud = FloatingHUD(db=db)
     hud.show()
     hud.raise_()
-    hud.activateWindow()
 
     # Launch Global Hotkey Listener
     hotkey_mgr = GlobalHotkeyManager(hud)
@@ -112,8 +115,8 @@ def main():
     print(" - Interface: Floating HUD docked at screen top-center")
     print(" - Voice Push-To-Talk: Hold LEFT-ALT or RIGHT-CTRL (release to send)")
     print(" - Voice Toggle: Press F8 or click glowing Cyber Orb on the notch")
-    print(" - In-Place Dictation: Hold RIGHT-ALT (types into active app with approval)")
-    print(" - Chat Drawer: Click the arrow toggle on the pill")
+    print(" - In-Place Dictation: Hold RIGHT-ALT (types into cursor input box in active app)")
+    print(" - Chat Drawer: Click the notch pill to expand full card")
     print(" - Safety Guard: Strict interactive approval required for desktop actions")
     print("=" * 65 + "\n")
 

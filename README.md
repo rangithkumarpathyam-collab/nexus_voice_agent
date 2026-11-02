@@ -106,7 +106,8 @@ run_assistant.bat
 | :--- | :--- | :--- |
 | **Push-to-Talk (Voice)** | **Hold `Left Alt`** or **`Right Ctrl`** | Drops down the **VoiceHUD**; speak your command, then release to execute. |
 | **Voice Toggle** | **`F8`** or **`🎙️` Icon** | Single press to start listening; press again to finish. |
-| **In-Place Dictation** | **Hold `Right Alt`** | Transcribes and types speech directly into your active window (with approval). |
+| **In-Place Dictation** | **Hold `Right Alt` / `AltGr`** | Transcribes and types speech directly into whatever input box your cursor is in (Notepad, browser, chats, docs) without stealing window focus. |
+| **Cursor Proximity & Hover** | **Move Cursor Near Notch** | Mascot eyes perk up, dilate with curiosity, lock gaze, and illuminate with a soft ethereal aura and playful elastic bounce. |
 | **Move Notch** | **Click & Drag** | Drag the notch anywhere across your displays (position is persisted). |
 | **Open Full Card** | **Double-Click Notch** | Expands into the full 440px × 480px Unified Window (Chat & History). |
 | **Collapse Card** | **`⌃` Button** | Folds the full card back into the compact top notch. |

@@ -10,6 +10,9 @@ HUD_PILL_COMPACT_STYLE = f"""
         border: 1px solid rgba(255, 255, 255, 0.08);
         border-radius: 22px;
     }}
+    QWidget#MainCard:hover {{
+        border: 1px solid rgba(255, 255, 255, 0.22);
+    }}
 """
 
 HUD_VOICE_HUD_STYLE = f"""
